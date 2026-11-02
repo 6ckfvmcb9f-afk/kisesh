@@ -1,0 +1,807 @@
+-- angelDustHub v11.0 (Final Polish)
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+if PlayerGui:FindFirstChild("angelDustHub") then PlayerGui.angelDustHub:Destroy() end
+
+-- ХРАНИЛИЩА
+local Connections = {}
+local ListConnections = {}
+local Tweens = {}
+local IsAlive = true
+local ActiveSlider = nil
+local NoclipCollisions = {} -- Фикс 3, 4: Раздельные таблицы коллизий
+local FarmCollisions = {}
+local OriginalGravity = workspace.Gravity
+local camConn = nil
+local toggleCount = 0 -- Фикс 7: Защита от старых анимаций
+
+local farmBV, flyBV, flyBG = nil, nil, nil
+local wasFarming = false
+
+-- ИСХОДНЫЕ НАСТРОЙКИ
+local OriginalWalkSpeed, OriginalJumpPower, OriginalUseJumpPower = 16, 50, true
+local DesiredWalkSpeed, DesiredJumpPower = 16, 50
+local hasSavedSettings = false
+
+-- ФИКС 1: Правильное сохранение с ожиданием Humanoid
+local function SaveOriginalSettings()
+    if hasSavedSettings then return end
+    local char = Player.Character or Player.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        OriginalWalkSpeed = hum.WalkSpeed
+        OriginalJumpPower = hum.JumpPower
+        OriginalUseJumpPower = hum.UseJumpPower
+        DesiredWalkSpeed = hum.WalkSpeed
+        DesiredJumpPower = hum.JumpPower
+        hasSavedSettings = true
+    end
+end
+task.spawn(SaveOriginalSettings)
+
+-- БЕЗОПАСНЫЕ ФУНКЦИИ
+local function SafeConnect(event, func)
+    local conn = event:Connect(func)
+    table.insert(Connections, conn)
+    return conn
+end
+
+-- ФИКС 5, 6: Очистка памяти от Tween и проверка IsAlive
+local function SafeTween(instance, info, properties)
+    if not IsAlive then return nil end
+    local tween = TweenService:Create(instance, info, properties)
+    table.insert(Tweens, tween)
+    tween.Completed:Connect(function()
+        for i, v in ipairs(Tweens) do
+            if v == tween then table.remove(Tweens, i) break end
+        end
+    end)
+    tween:Play()
+    return tween
+end
+
+-- ПЕРЕМЕННЫЕ НАСТРОЕК
+local ThemeName = "Violet"
+local NoclipEnabled, AntiFlingEnabled, AntiAFKEnabled, InfiniteJump = false, false, false, false
+local FlyEnabled, FlySpeed = false, 50
+local FarmSpeed = 80
+local CurrentPageName = "Main"
+local FlyUpPressed, FlyDownPressed = false, false
+
+local ESPEnabled, ESP_Murder, ESP_Sheriff, ESP_Hero, ESP_Innocent, ESP_Gun = false, true, true, true, true, true
+local ESP_MaxDist = 2000
+
+local KillAuraEnabled, KillAllEnabled = false, false
+local AutoPickupGunEnabled, SilentAimEnabled, AutoShootEnabled = false, false, false
+local AutoFarmEnabled, AutoThrowKnife = false, false
+local AntiAimEnabled = false
+local FlingAllEnabled, FlingOneEnabled, TargetFlingPlayer = false, false, "None"
+
+-- ФИКС 9: Единая точка отсчета таймера
+local TimerRunning, TimerElapsedBase, TimerStartTime = false, 0, 0
+
+local Themes = {
+    Violet = { Background = Color3.fromRGB(25,20,35), Panel = Color3.fromRGB(45,35,65), Accent = Color3.fromRGB(175,120,255), Text = Color3.fromRGB(245,235,255) },
+    Pink = { Background = Color3.fromRGB(35,23,34), Panel = Color3.fromRGB(55,35,53), Accent = Color3.fromRGB(255,125,190), Text = Color3.fromRGB(255,235,247) },
+    Blue = { Background = Color3.fromRGB(20,25,35), Panel = Color3.fromRGB(35,45,65), Accent = Color3.fromRGB(80,140,255), Text = Color3.fromRGB(230,235,255) },
+    Green = { Background = Color3.fromRGB(20,30,25), Panel = Color3.fromRGB(35,55,45), Accent = Color3.fromRGB(80,220,120), Text = Color3.fromRGB(230,255,235) },
+    Red = { Background = Color3.fromRGB(35,20,20), Panel = Color3.fromRGB(65,35,35), Accent = Color3.fromRGB(255,80,80), Text = Color3.fromRGB(255,235,235) },
+    Orange = { Background = Color3.fromRGB(35,25,20), Panel = Color3.fromRGB(65,45,35), Accent = Color3.fromRGB(255,150,50), Text = Color3.fromRGB(255,245,235) },
+    Black = { Background = Color3.fromRGB(17,17,20), Panel = Color3.fromRGB(35,35,40), Accent = Color3.fromRGB(220,100,180), Text = Color3.fromRGB(245,245,245) }
+}
+local Theme = Themes[ThemeName]
+
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "angelDustHub"; Gui.ResetOnSpawn = false; Gui.IgnoreGuiInset = true; Gui.DisplayOrder = 999; Gui.Parent = PlayerGui
+local Scale = Instance.new("UIScale"); Scale.Parent = Gui
+
+local function UpdateScale() 
+    local cam = workspace.CurrentCamera 
+    if cam then Scale.Scale = math.clamp(math.min(cam.ViewportSize.X/900, cam.ViewportSize.Y/650), 0.65, 1) end 
+end
+
+local function SetupCamera()
+    if camConn then 
+        camConn:Disconnect()
+        for i, v in ipairs(Connections) do if v == camConn then table.remove(Connections, i) break end end
+    end
+    if workspace.CurrentCamera then 
+        camConn = workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateScale) 
+        table.insert(Connections, camConn)
+    end
+    UpdateScale()
+end
+table.insert(Connections, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(SetupCamera))
+SetupCamera()
+
+local function Corner(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 10); c.Parent = p; return c end
+local function Stroke(p, c, t) local s = Instance.new("UIStroke"); s.Color = c; s.Thickness = t or 2; s.Name = "HubOutline"; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = p; return s end
+
+local function NewLabel(p, t, h, isDynamic)
+    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-12,0,h or 30); l.BackgroundTransparency = 1; l.Text = t
+    l.TextColor3 = Theme.Text; l.TextSize = 15; l.Font = Enum.Font.Gotham; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = p
+    if isDynamic ~= false then l:SetAttribute("IsDynamic", true) end
+    return l
+end
+
+local function NewButton(p, t, cb)
+    local b = Instance.new("TextButton"); b.Size = UDim2.new(1,-12,0,36); b.BackgroundColor3 = Theme.Panel; b.Text = t
+    b.TextColor3 = Theme.Text; b.TextSize = 14; b.Font = Enum.Font.GothamMedium; b.AutoButtonColor = false; b.Parent = p
+    Corner(b, 8); Stroke(b, Theme.Accent, 2)
+    SafeConnect(b.Activated, function() if cb then cb(b) end end); return b
+end
+
+local function NewPage(p)
+    local pg = Instance.new("ScrollingFrame"); pg.Size = UDim2.new(1,0,1,0); pg.BackgroundTransparency = 1; pg.BorderSizePixel = 0
+    pg.ScrollBarThickness = 3; pg.ScrollBarImageColor3 = Theme.Accent; pg.CanvasSize = UDim2.new(0,0,0,0); pg.Visible = false; pg.Parent = p
+    local lay = Instance.new("UIListLayout"); lay.Padding = UDim.new(0,8); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = pg
+    SafeConnect(lay:GetPropertyChangedSignal("AbsoluteContentSize"), function() pg.CanvasSize = UDim2.new(0,0,0,lay.AbsoluteContentSize.Y+15) end)
+    local pad = Instance.new("UIPadding"); pad.PaddingTop = UDim.new(0,8); pad.PaddingLeft = UDim.new(0,6); pad.PaddingRight = UDim.new(0,6); pad.Parent = pg
+    return pg
+end
+
+local function CreateSlider(p, t, min, max, def, cb)
+    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-12,0,65); f.BackgroundTransparency = 1; f.Parent = p
+    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,0,0,25); l.BackgroundTransparency = 1; l.TextColor3 = Theme.Text; l.Font = Enum.Font.GothamMedium; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f; l:SetAttribute("IsDynamic", true)
+    local tr = Instance.new("TextButton"); tr.Name = "SliderTrack"; tr.Size = UDim2.new(1,0,0,13); tr.Position = UDim2.fromOffset(0,37); tr.BackgroundColor3 = Theme.Panel; tr.Text = ""; tr.AutoButtonColor = false; tr.Parent = f; Corner(tr,8); Stroke(tr, Theme.Accent, 2)
+    local fill = Instance.new("Frame"); fill.Name = "SliderFill"; fill.Size = UDim2.new(0,0,1,0); fill.BackgroundColor3 = Theme.Accent; fill.BorderSizePixel = 0; fill.Parent = tr; Corner(fill,8)
+    local val = def
+    local function SetVal(nv) 
+        nv = math.clamp(nv, min, max)
+        val = math.floor(nv) 
+        fill.Size = UDim2.new((val-min)/(max-min), 0, 1, 0)
+        l.Text = t..": "..tostring(val)
+        if cb then cb(val) end 
+    end
+    local function UpdateX(x) 
+        local w = tr.AbsoluteSize.X
+        -- ФИКС 10: Защита от деления на ноль
+        if w > 0 and max > min then 
+            SetVal(min + (max-min)*math.clamp((x - tr.AbsolutePosition.X)/w, 0, 1)) 
+        end 
+    end
+    SafeConnect(tr.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then ActiveSlider = UpdateX UpdateX(i.Position.X) end end)
+    SetVal(def); return { Set = SetVal }
+end
+
+SafeConnect(UserInputService.InputChanged, function(i) if ActiveSlider and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then ActiveSlider(i.Position.X) end end)
+SafeConnect(UserInputService.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then ActiveSlider = nil end end)
+SafeConnect(UserInputService.WindowFocusReleased, function() ActiveSlider = nil end)
+
+local Main = Instance.new("Frame"); Main.Size = UDim2.fromOffset(650,450); Main.Position = UDim2.new(0.5,-325,0.5,-225); Main.BackgroundColor3 = Theme.Background; Main.BorderSizePixel = 0; Main.Visible = false; Main.Parent = Gui; Main:SetAttribute("IsPanel", true); Corner(Main,14); Stroke(Main, Theme.Accent, 2)
+local Header = Instance.new("Frame"); Header.Size = UDim2.new(1,0,0,48); Header.BackgroundColor3 = Theme.Panel; Header.Parent = Main; Header:SetAttribute("IsPanel", true); Corner(Header,14)
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1,-150,1,0); Title.Position = UDim2.fromOffset(15,0); Title.BackgroundTransparency = 1; Title.Text = "angelDustHub v11.0"; Title.TextColor3 = Theme.Accent; Title.TextSize = 18; Title.Font = Enum.Font.GothamBold; Title.TextXAlignment = Enum.TextXAlignment.Left; Title.Parent = Header
+
+local CopyTGK = Instance.new("TextButton", Header); CopyTGK.Size = UDim2.fromOffset(30,30); CopyTGK.Position = UDim2.new(1,-80,0,9); CopyTGK.BackgroundColor3 = Theme.Accent; CopyTGK.Text = "TG"; CopyTGK.TextColor3 = Theme.Background; CopyTGK.Font = Enum.Font.GothamBold; CopyTGK.TextSize = 14; Corner(CopyTGK, 8); Stroke(CopyTGK, Theme.Accent, 1)
+SafeConnect(CopyTGK.Activated, function() 
+    local ok = pcall(function() if setclipboard then setclipboard("https://t.me/kiseshAngeldust") end end)
+    CopyTGK.Text = ok and "OK" or "ERR"
+    task.wait(1) 
+    if not IsAlive or not CopyTGK.Parent then return end
+    CopyTGK.Text = "TG" 
+end)
+
+local Close = Instance.new("TextButton"); Close.Size = UDim2.fromOffset(34,30); Close.Position = UDim2.new(1,-44,0,9); Close.BackgroundColor3 = Color3.fromRGB(190,65,85); Close.Text = "×"; Close.TextColor3 = Color3.new(1,1,1); Close.TextSize = 23; Close.Font = Enum.Font.GothamBold; Close.AutoButtonColor = false; Close.Parent = Header; Corner(Close,8)
+
+local Sidebar = Instance.new("Frame"); Sidebar.Position = UDim2.fromOffset(0,48); Sidebar.Size = UDim2.new(0,140,1,-48); Sidebar.BackgroundColor3 = Theme.Panel; Sidebar.Parent = Main; Sidebar:SetAttribute("IsPanel", true)
+local SidebarLayout = Instance.new("UIListLayout"); SidebarLayout.Padding = UDim.new(0,6); SidebarLayout.Parent = Sidebar
+local SidebarPad = Instance.new("UIPadding"); SidebarPad.PaddingTop = UDim.new(0,10); SidebarPad.PaddingLeft = UDim.new(0,8); SidebarPad.PaddingRight = UDim.new(0,8); SidebarPad.Parent = Sidebar
+local Content = Instance.new("Frame"); Content.Position = UDim2.fromOffset(150,58); Content.Size = UDim2.new(1,-160,1,-68); Content.BackgroundTransparency = 1; Content.Parent = Main
+
+local Pages = { Main = NewPage(Content), Player = NewPage(Content), Visual = NewPage(Content), Sheriff = NewPage(Content), Murderer = NewPage(Content), Teleport = NewPage(Content), Farm = NewPage(Content), Settings = NewPage(Content) }
+local Tabs = {}
+
+local function ShowPage(n)
+    if not Pages[n] then return end
+    CurrentPageName = n
+    for name, pg in pairs(Pages) do pg.Visible = (name == n) end
+    for name, btn in pairs(Tabs) do btn.BackgroundColor3 = (name == n) and Theme.Accent or Theme.Background btn.TextColor3 = (name == n) and Theme.Background or Theme.Text end
+end
+
+local function CreateTab(n, t)
+    local b = Instance.new("TextButton"); b.Size = UDim2.new(1,0,0,35); b.BackgroundColor3 = Theme.Background; b.Text = t; b.TextColor3 = Theme.Text; b.TextSize = 13; b.Font = Enum.Font.GothamMedium; b.AutoButtonColor = false; b.Parent = Sidebar; Corner(b,8); Stroke(b, Theme.Accent, 2)
+    b.Name = n; Tabs[n] = b; SafeConnect(b.Activated, function() ShowPage(n) end)
+end
+
+CreateTab("Main", "Главная"); CreateTab("Player", "Игрок"); CreateTab("Visual", "Визуал"); CreateTab("Sheriff", "Шериф"); CreateTab("Murderer", "Убийца"); CreateTab("Teleport", "Телепорт"); CreateTab("Farm", "Фарм"); CreateTab("Settings", "Настройки")
+
+local MainPage = Pages.Main
+NewLabel(MainPage, "Добро пожаловать в angelDustHub", 34)
+local FPSL, PingL = NewLabel(MainPage, "FPS: --", 27), NewLabel(MainPage, "Пинг: --", 27)
+local TimerL = NewLabel(MainPage, "00:00:00", 38); TimerL.TextColor3 = Theme.Accent; TimerL.TextSize = 24; TimerL.Font = Enum.Font.GothamBold
+NewButton(MainPage, "Старт/Стоп таймер", function() 
+    if not TimerRunning then 
+        TimerRunning = true 
+        TimerStartTime = os.clock() 
+    else 
+        TimerRunning = false 
+        TimerElapsedBase = TimerElapsedBase + (os.clock() - TimerStartTime) 
+    end 
+end)
+NewButton(MainPage, "Сброс таймера", function() TimerElapsedBase = 0 TimerRunning = false TimerStartTime = 0 end)
+NewButton(MainPage, "Наш Telegram канал", function() pcall(function() if setclipboard then setclipboard("https://t.me/kiseshAngeldust") end end) end)
+
+local VisualPage = Pages.Visual
+NewLabel(VisualPage, "Настройки подсветки (ESP)", 30)
+NewButton(VisualPage, "ESP ВКЛ/ВЫКЛ", function(btn) ESPEnabled = not ESPEnabled btn:SetAttribute("IsActive", ESPEnabled) btn.Text = ESPEnabled and "ESP: ВКЛ" or "ESP ВКЛ/ВЫКЛ" btn.BackgroundColor3 = ESPEnabled and Theme.Accent or Theme.Panel end)
+NewButton(VisualPage, "Роль: Убийца", function(btn) ESP_Murder = not ESP_Murder btn:SetAttribute("IsActive", ESP_Murder) btn.BackgroundColor3 = ESP_Murder and Theme.Accent or Theme.Panel end)
+NewButton(VisualPage, "Роль: Шериф", function(btn) ESP_Sheriff = not ESP_Sheriff btn:SetAttribute("IsActive", ESP_Sheriff) btn.BackgroundColor3 = ESP_Sheriff and Theme.Accent or Theme.Panel end)
+NewButton(VisualPage, "Роль: Герой", function(btn) ESP_Hero = not ESP_Hero btn:SetAttribute("IsActive", ESP_Hero) btn.BackgroundColor3 = ESP_Hero and Theme.Accent or Theme.Panel end)
+NewButton(VisualPage, "Роль: Мирный", function(btn) ESP_Innocent = not ESP_Innocent btn:SetAttribute("IsActive", ESP_Innocent) btn.BackgroundColor3 = ESP_Innocent and Theme.Accent or Theme.Panel end)
+NewButton(VisualPage, "ESP Пистолета", function(btn) ESP_Gun = not ESP_Gun btn:SetAttribute("IsActive", ESP_Gun) btn.BackgroundColor3 = ESP_Gun and Theme.Accent or Theme.Panel end)
+CreateSlider(VisualPage, "Макс. дистанция ESP", 100, 5000, 2000, function(v) ESP_MaxDist = v end)
+
+local SheriffPage = Pages.Sheriff
+NewLabel(SheriffPage, "Функции Шерифа", 30)
+NewButton(SheriffPage, "Авто-подбор пистолета", function(btn) AutoPickupGunEnabled = not AutoPickupGunEnabled btn:SetAttribute("IsActive", AutoPickupGunEnabled) btn.Text = AutoPickupGunEnabled and "Авто-подбор: ВКЛ" or "Авто-подбор пистолета" btn.BackgroundColor3 = AutoPickupGunEnabled and Theme.Accent or Theme.Panel end)
+NewButton(SheriffPage, "Silent Aim (Наведение)", function(btn) SilentAimEnabled = not SilentAimEnabled btn:SetAttribute("IsActive", SilentAimEnabled) btn.Text = SilentAimEnabled and "Silent Aim: ВКЛ" or "Silent Aim (Наведение)" btn.BackgroundColor3 = SilentAimEnabled and Theme.Accent or Theme.Panel end)
+NewButton(SheriffPage, "Авто-выстрел в мардера", function(btn) AutoShootEnabled = not AutoShootEnabled btn:SetAttribute("IsActive", AutoShootEnabled) btn.Text = AutoShootEnabled and "Авто-выстрел: ВКЛ" or "Авто-выстрел в мардера" btn.BackgroundColor3 = AutoShootEnabled and Theme.Accent or Theme.Panel end)
+
+local MurdererPage = Pages.Murderer
+NewLabel(MurdererPage, "Функции Убийцы", 30)
+NewButton(MurdererPage, "Аура убийства (Kill Aura)", function(btn) KillAuraEnabled = not KillAuraEnabled btn:SetAttribute("IsActive", KillAuraEnabled) btn.Text = KillAuraEnabled and "Аура убийства: ВКЛ" or "Аура убийства (Kill Aura)" btn.BackgroundColor3 = KillAuraEnabled and Theme.Accent or Theme.Panel end)
+NewButton(MurdererPage, "Убить всех", function(btn) KillAllEnabled = not KillAllEnabled btn:SetAttribute("IsActive", KillAllEnabled) btn.Text = KillAllEnabled and "Убить всех: ВКЛ" or "Убить всех" btn.BackgroundColor3 = KillAllEnabled and Theme.Accent or Theme.Panel end)
+NewButton(MurdererPage, "Авто-бросок ножа", function(btn) AutoThrowKnife = not AutoThrowKnife btn:SetAttribute("IsActive", AutoThrowKnife) btn.Text = AutoThrowKnife and "Авто-бросок: ВКЛ" or "Авто-бросок ножа" btn.BackgroundColor3 = AutoThrowKnife and Theme.Accent or Theme.Panel end)
+
+local PlayerPage = Pages.Player
+NewLabel(PlayerPage, "Движение и физика", 30)
+CreateSlider(PlayerPage, "Скорость", 0, 150, OriginalWalkSpeed, function(v) DesiredWalkSpeed = v local h = Player.Character and Player.Character:FindFirstChildOfClass("Humanoid") if h then h.WalkSpeed = v end end)
+CreateSlider(PlayerPage, "Прыжок", 0, 150, OriginalJumpPower, function(v) DesiredJumpPower = v local h = Player.Character and Player.Character:FindFirstChildOfClass("Humanoid") if h then h.UseJumpPower = OriginalUseJumpPower h.JumpPower = v end end)
+-- ФИКС 2: Восстановление гравитации
+CreateSlider(PlayerPage, "Гравитация", 0, 300, 196, function(v) if v == 196 then workspace.Gravity = OriginalGravity else workspace.Gravity = v end end) 
+
+NewButton(PlayerPage, "Fly (Полет): ВЫКЛ", function(btn) 
+    FlyEnabled = not FlyEnabled 
+    if FlyEnabled then AutoFarmEnabled = false end
+    btn:SetAttribute("IsActive", FlyEnabled) btn.Text = FlyEnabled and "Fly (Полет): ВКЛ" or "Fly (Полет): ВЫКЛ" btn.BackgroundColor3 = FlyEnabled and Theme.Accent or Theme.Panel 
+    if FlyUpBtn then FlyUpBtn.Visible = FlyEnabled FlyDownBtn.Visible = FlyEnabled end
+end)
+CreateSlider(PlayerPage, "Скорость полета", 10, 200, 50, function(v) FlySpeed = v end)
+
+NewButton(PlayerPage, "Ghost Mode (Сквозь стены)", function(btn) 
+    NoclipEnabled = not NoclipEnabled 
+    if NoclipEnabled then
+        AutoFarmEnabled = false 
+        for _, p in ipairs(Player.Character:GetDescendants()) do
+            if p:IsA("BasePart") and NoclipCollisions[p] == nil then NoclipCollisions[p] = p.CanCollide p.CanCollide = false end
+        end
+    else
+        for part, col in pairs(NoclipCollisions) do if part and part.Parent then part.CanCollide = col end end
+        table.clear(NoclipCollisions)
+    end
+    btn:SetAttribute("IsActive", NoclipEnabled) btn.Text = NoclipEnabled and "Ghost Mode: ВКЛ" or "Ghost Mode (Сквозь стены)" btn.BackgroundColor3 = NoclipEnabled and Theme.Accent or Theme.Panel 
+end)
+
+NewButton(PlayerPage, "Бесконечный прыжок", function(btn) InfiniteJump = not InfiniteJump btn:SetAttribute("IsActive", InfiniteJump) btn.Text = InfiniteJump and "Беск. прыжок: ВКЛ" or "Бесконечный прыжок" btn.BackgroundColor3 = InfiniteJump and Theme.Accent or Theme.Panel end)
+NewButton(PlayerPage, "Anti-Fling (Защита)", function(btn) AntiFlingEnabled = not AntiFlingEnabled btn:SetAttribute("IsActive", AntiFlingEnabled) btn.Text = AntiFlingEnabled and "Anti-Fling: ВКЛ" or "Anti-Fling (Защита)" btn.BackgroundColor3 = AntiFlingEnabled and Theme.Accent or Theme.Panel end)
+NewButton(PlayerPage, "Anti-AFK (Анти-АФК)", function(btn) AntiAFKEnabled = not AntiAFKEnabled btn:SetAttribute("IsActive", AntiAFKEnabled) btn.Text = AntiAFKEnabled and "Anti-AFK: ВКЛ" or "Anti-AFK (Анти-АФК)" btn.BackgroundColor3 = AntiAFKEnabled and Theme.Accent or Theme.Panel end)
+NewButton(PlayerPage, "Anti-Aim (Вращение)", function(btn) AntiAimEnabled = not AntiAimEnabled btn:SetAttribute("IsActive", AntiAimEnabled) btn.Text = AntiAimEnabled and "Anti-Aim: ВКЛ" or "Anti-Aim (Вращение)" btn.BackgroundColor3 = AntiAimEnabled and Theme.Accent or Theme.Panel end)
+
+local FarmPage = Pages.Farm
+NewLabel(FarmPage, "Автофарм и Трейды", 30)
+NewButton(FarmPage, "Автофарм монет: ВЫКЛ", function(btn) 
+    AutoFarmEnabled = not AutoFarmEnabled 
+    if AutoFarmEnabled then 
+        FlyEnabled = false 
+        if FlyUpBtn then FlyUpBtn.Visible = false FlyDownBtn.Visible = false end
+        NoclipEnabled = false
+        for part, col in pairs(NoclipCollisions) do if part and part.Parent then part.CanCollide = col end end
+        table.clear(NoclipCollisions)
+    end
+    btn:SetAttribute("IsActive", AutoFarmEnabled) btn.Text = AutoFarmEnabled and "Автофарм: ВКЛ" or "Автофарм: ВЫКЛ" btn.BackgroundColor3 = AutoFarmEnabled and Theme.Accent or Theme.Panel 
+end)
+CreateSlider(FarmPage, "Скорость Фарма", 10, 150, 80, function(v) FarmSpeed = v end)
+
+local TeleportPage = Pages.Teleport
+NewLabel(TeleportPage, "Телепорт к ролям", 30)
+NewButton(TeleportPage, "В лобби", function() if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then Player.Character.HumanoidRootPart.CFrame = CFrame.new(-8, -66, -4) end end)
+NewButton(TeleportPage, "К Убийце", function() for _, p in pairs(Players:GetPlayers()) do if p.Character and (p.Character:FindFirstChild("Knife") or (p:FindFirstChild("Backpack") and p.Backpack:FindFirstChild("Knife"))) then if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then Player.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0,3,0) end end end end)
+NewButton(TeleportPage, "К Шерифу", function() for _, p in pairs(Players:GetPlayers()) do if p.Character and (p.Character:FindFirstChild("Gun") or p.Character:FindFirstChild("Revolver") or (p:FindFirstChild("Backpack") and (p.Backpack:FindFirstChild("Gun") or p.Backpack:FindFirstChild("Revolver")))) then if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then Player.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0,3,0) end end end end)
+
+local SearchBox = Instance.new("TextBox", TeleportPage); SearchBox.Size = UDim2.new(1,-12,0,36); SearchBox.BackgroundColor3 = Theme.Background; SearchBox.TextColor3 = Theme.Text; SearchBox.PlaceholderText = "Поиск игрока..."; SearchBox.Parent = TeleportPage; Corner(SearchBox,8); Stroke(SearchBox, Theme.Accent, 2)
+local TeleScroll = Instance.new("ScrollingFrame", TeleportPage); TeleScroll.Size = UDim2.new(1,-12,0,150); TeleScroll.BackgroundColor3 = Theme.Panel; TeleScroll.BorderSizePixel = 0; TeleScroll:SetAttribute("IsPanel", true); Corner(TeleScroll,8); Stroke(TeleScroll, Theme.Accent, 2)
+local TeleLayout = Instance.new("UIListLayout", TeleScroll); TeleLayout.Padding = UDim.new(0,4); TeleLayout.Parent = TeleScroll
+
+local function RefreshLists()
+    for _, conn in ipairs(ListConnections) do if conn then conn:Disconnect() end end
+    table.clear(ListConnections)
+    
+    for _, c in ipairs(TeleScroll:GetChildren()) do 
+        if c:IsA("TextButton") then c:Destroy() end 
+    end
+    local searchTxt = string.lower(SearchBox.Text)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= Player and string.find(string.lower(p.Name), searchTxt) then
+            local b = Instance.new("TextButton", TeleScroll); b.Size = UDim2.new(1,0,0,30); b.BackgroundColor3 = Theme.Background; b.Text = ""; b.AutoButtonColor = false; Corner(b,6); Stroke(b, Theme.Accent, 2)
+            local txt = Instance.new("TextLabel", b); txt.Size = UDim2.new(1,-10,1,0); txt.Position = UDim2.fromOffset(5,0); txt.BackgroundTransparency = 1; txt.Text = p.Name; txt.TextColor3 = Theme.Text; txt.Font = Enum.Font.GothamMedium; txt.TextXAlignment = Enum.TextXAlignment.Left
+            local newConn = b.Activated:Connect(function() if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then Player.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0,3,0) end end)
+            table.insert(ListConnections, newConn)
+        end
+    end
+    task.defer(function() 
+        if TeleScroll and TeleScroll.Parent then 
+            TeleScroll.CanvasSize = UDim2.new(0,0,0,TeleLayout.AbsoluteContentSize.Y+10) 
+        end
+    end)
+end
+SafeConnect(SearchBox:GetPropertyChangedSignal("Text"), RefreshLists)
+SafeConnect(Players.PlayerAdded, RefreshLists)
+SafeConnect(Players.PlayerRemoving, RefreshLists)
+
+local FlyUpBtn = Instance.new("TextButton", Gui); FlyUpBtn.Size = UDim2.fromOffset(50,50); FlyUpBtn.Position = UDim2.new(1,-120,0.5,0); FlyUpBtn.BackgroundColor3 = Theme.Panel; FlyUpBtn.Text = "⬆"; FlyUpBtn.TextColor3 = Theme.Accent; FlyUpBtn.TextSize = 24; FlyUpBtn.Visible = false; Corner(FlyUpBtn, 10); Stroke(FlyUpBtn, Theme.Accent, 2)
+local FlyDownBtn = Instance.new("TextButton", Gui); FlyDownBtn.Size = UDim2.fromOffset(50,50); FlyDownBtn.Position = UDim2.new(1,-120,0.5,60); FlyDownBtn.BackgroundColor3 = Theme.Panel; FlyDownBtn.Text = "⬇"; FlyDownBtn.TextColor3 = Theme.Accent; FlyDownBtn.TextSize = 24; FlyDownBtn.Visible = false; Corner(FlyDownBtn, 10); Stroke(FlyDownBtn, Theme.Accent, 2)
+
+SafeConnect(FlyUpBtn.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then FlyUpPressed = true end end)
+SafeConnect(FlyUpBtn.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then FlyUpPressed = false end end)
+SafeConnect(FlyDownBtn.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then FlyDownPressed = true end end)
+SafeConnect(FlyDownBtn.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then FlyDownPressed = false end end)
+
+local Mini = Instance.new("TextButton", Gui); Mini.Size = UDim2.fromOffset(48,48); Mini.Position = UDim2.fromOffset(18,180); Mini.BackgroundColor3 = Theme.Panel; Mini.Text = "♡"; Mini.TextColor3 = Theme.Accent; Mini.TextSize = 34; Mini.Font = Enum.Font.GothamBold; Mini.AutoButtonColor = false; Corner(Mini,14); Stroke(Mini, Theme.Accent, 2)
+
+local SettingsPage = Pages.Settings
+NewLabel(SettingsPage, "Цветовые темы", 30)
+local themeNames = {"Violet", "Pink", "Blue", "Green", "Red", "Orange", "Black"}
+for _, tName in ipairs(themeNames) do
+    NewButton(SettingsPage, tName, function()
+        ThemeName = tName Theme = Themes[ThemeName]
+        Main.BackgroundColor3 = Theme.Background Header.BackgroundColor3 = Theme.Panel Sidebar.BackgroundColor3 = Theme.Panel Title.TextColor3 = Theme.Accent
+        for _, obj in ipairs(Gui:GetDescendants()) do
+            if obj:IsA("UIStroke") and obj.Name == "HubOutline" then obj.Color = Theme.Accent 
+            elseif obj.Name == "SliderFill" then obj.BackgroundColor3 = Theme.Accent 
+            elseif obj.Name == "SliderTrack" then obj.BackgroundColor3 = Theme.Panel 
+            elseif obj:GetAttribute("IsDynamic") then obj.TextColor3 = Theme.Text 
+            elseif obj:IsA("TextBox") then obj.BackgroundColor3 = Theme.Background 
+            elseif obj:IsA("TextButton") then
+                if obj ~= Close and obj ~= CopyTGK then
+                    if obj.Parent == Sidebar then
+                        obj.BackgroundColor3 = (CurrentPageName == obj.Name) and Theme.Accent or Theme.Background
+                        obj.TextColor3 = (CurrentPageName == obj.Name) and Theme.Background or Theme.Text
+                    else
+                        if obj:GetAttribute("IsActive") then obj.BackgroundColor3 = Theme.Accent obj.TextColor3 = Theme.Background
+                        else obj.BackgroundColor3 = Theme.Panel obj.TextColor3 = Theme.Text end
+                    end
+                end
+            elseif obj:IsA("Frame") and (obj == Header or obj == Sidebar or obj == TeleScroll) then obj.BackgroundColor3 = Theme.Panel end
+        end
+        FlyUpBtn.BackgroundColor3 = Theme.Panel; FlyUpBtn.TextColor3 = Theme.Accent
+        FlyDownBtn.BackgroundColor3 = Theme.Panel; FlyDownBtn.TextColor3 = Theme.Accent
+        Mini.BackgroundColor3 = Theme.Panel; Mini.TextColor3 = Theme.Accent
+    end)
+end
+
+NewLabel(SettingsPage, "Прозрачность меню", 30)
+CreateSlider(SettingsPage, "Прозрачность", 0, 80, 0, function(v) 
+    local alpha = v / 100
+    for _, obj in ipairs(Main:GetDescendants()) do
+        if obj:GetAttribute("IsPanel") then
+            obj.BackgroundTransparency = alpha
+        end
+    end
+end)
+
+NewButton(SettingsPage, "Выгрузить хаб", function()
+    IsAlive = false
+    ActiveSlider = nil
+    
+    for _, t in ipairs(Tweens) do pcall(function() t:Cancel() end) end
+    for _, conn in ipairs(Connections) do if conn then pcall(function() conn:Disconnect() end) end end
+    for _, conn in ipairs(ListConnections) do if conn then pcall(function() conn:Disconnect() end) end end
+    table.clear(ListConnections) -- ФИКС 8: Очистка таблицы списка
+    
+    if farmBV then farmBV:Destroy() end
+    if flyBV then flyBV:Destroy() end
+    if flyBG then flyBG:Destroy() end
+    
+    if Player.Character then
+        for part, col in pairs(NoclipCollisions) do if part and part.Parent then part.CanCollide = col end end
+        for part, col in pairs(FarmCollisions) do if part and part.Parent then part.CanCollide = col end end
+        local hum = Player.Character:FindFirstChildOfClass("Humanoid")
+        if hum then 
+            hum.WalkSpeed = OriginalWalkSpeed 
+            hum.UseJumpPower = OriginalUseJumpPower
+            hum.JumpPower = OriginalJumpPower 
+        end
+    end
+    workspace.Gravity = OriginalGravity
+    
+    for _, obj in ipairs(workspace:GetDescendants()) do 
+        if obj.Name == "AngelGunESP" or obj.Name == "AngelESP" then obj:Destroy() end 
+    end
+    
+    if mtRestore then pcall(mtRestore) end 
+    Gui:Destroy()
+end)
+
+local HubOpen, Animating = false, false
+local function ToggleHub()
+    if Animating then return end 
+    HubOpen = not HubOpen 
+    Animating = true
+    toggleCount = toggleCount + 1 -- ФИКС 7: Уникальный ID для анимации
+    local currentToggle = toggleCount
+    
+    Main.Visible = true
+    
+    if HubOpen then Main.Size = UDim2.fromOffset(600,415) end 
+    
+    if uiTween then uiTween:Cancel() end
+    uiTween = SafeTween(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {Size = HubOpen and UDim2.fromOffset(650,450) or UDim2.fromOffset(600,415)})
+    
+    task.delay(0.2, function() 
+        if not IsAlive or not Main or currentToggle ~= toggleCount then return end
+        if not HubOpen then Main.Visible = false end 
+        Animating = false 
+    end)
+end
+SafeConnect(Close.Activated, ToggleHub) 
+SafeConnect(Mini.Activated, ToggleHub)
+
+local function MakeDraggable(obj, handle)
+    local dragging, dragStart, startPos
+    SafeConnect(handle.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = true; dragStart = i.Position; startPos = obj.Position end end)
+    SafeConnect(UserInputService.InputChanged, function(inp) if dragging and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then local d = inp.Position - dragStart; obj.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y) end end)
+    SafeConnect(UserInputService.InputEnded, function(inp) if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then dragging = false end end)
+end
+MakeDraggable(Main, Header); MakeDraggable(Mini, Mini)
+
+SafeConnect(Player.CharacterAdded, function(char)
+    task.wait(1)
+    if not IsAlive then return end
+    if Player.Character ~= char then return end 
+    
+    if farmBV then farmBV:Destroy() farmBV = nil end
+    if flyBV then flyBV:Destroy() flyBV = nil end
+    if flyBG then flyBG:Destroy() flyBG = nil end
+    
+    for part, col in pairs(NoclipCollisions) do if part and part.Parent then part.CanCollide = col end end
+    for part, col in pairs(FarmCollisions) do if part and part.Parent then part.CanCollide = col end end
+    table.clear(NoclipCollisions)
+    table.clear(FarmCollisions)
+    
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then 
+        hum.WalkSpeed = DesiredWalkSpeed 
+        hum.UseJumpPower = OriginalUseJumpPower 
+        hum.JumpPower = DesiredJumpPower 
+    end
+    
+    if NoclipEnabled then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then NoclipCollisions[p] = p.CanCollide p.CanCollide = false end
+        end
+    end
+end)
+
+-- ==========================================
+-- ЧАСТЬ 2: ЛОГИКА ФУНКЦИЙ (v11.0 Final Polish)
+-- ==========================================
+local BlacklistedCoins = {}
+local MapNames = { "Hospital3", "Office3", "House2", "Hotel", "Mansion", "Factory", "Bank", "School", "Lab", "ResearchFacility", "BioLab", "BeachResort", "Pier", "Workplace", "Mansion2", "Yacht", "MilBase", "PoliceStation" }
+local LastAntiAFK = tick()
+
+-- ФУНКЦИЯ ПОИСКА МОНЕТ
+local function GetNearestCoin()
+    local map = nil
+    for _, n in pairs(MapNames) do local m = workspace:FindFirstChild(n) if m then map = m break end end
+    if not map then return nil end
+    local c = map:FindFirstChild("CoinContainer") 
+    if not c or not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    local near, dist = nil, math.huge
+    for _, coin in pairs(c:GetChildren()) do 
+        if coin.Name == "Coin_Server" and coin:IsA("Part") then 
+            local isBlacklisted = BlacklistedCoins[coin] and tick() < BlacklistedCoins[coin]
+            if not isBlacklisted then
+                local d = (Player.Character.HumanoidRootPart.Position - coin.Position).Magnitude 
+                if d < dist then dist = d near = coin end 
+            end
+        end 
+    end
+    return near
+end
+
+-- 1. ЦИКЛ ESP (Жесткая очистка мусора)
+task.spawn(function()
+    while IsAlive do
+        task.wait(0.5)
+        if not IsAlive then break end
+        
+        -- Очистка потерянных подсветок (если игрок умер, вышел или ESP выключен)
+        for _, hl in ipairs(workspace:GetDescendants()) do
+            if hl.Name == "AngelESP" and hl:IsA("Highlight") then
+                local char = hl.Parent
+                local plr = Players:GetPlayerFromCharacter(char)
+                if not plr or not char:FindFirstChild("HumanoidRootPart") or not ESPEnabled then
+                    hl:Destroy()
+                end
+            end
+        end
+        
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= Player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                local dist = (Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")) and (Player.Character.HumanoidRootPart.Position - p.Character.HumanoidRootPart.Position).Magnitude or 0
+                local hl = p.Character:FindFirstChild("AngelESP")
+                
+                if ESPEnabled and dist <= ESP_MaxDist then
+                    if not hl then
+                        hl = Instance.new("Highlight")
+                        hl.Name = "AngelESP"
+                        hl.FillTransparency = 0.5
+                        hl.OutlineTransparency = 0
+                        hl.Parent = p.Character
+                    end
+                    
+                    local gun = p.Character:FindFirstChild("Gun") or p.Character:FindFirstChild("Revolver") or (p:FindFirstChild("Backpack") and (p.Backpack:FindFirstChild("Gun") or p.Backpack:FindFirstChild("Revolver")))
+                    local knife = p.Character:FindFirstChild("Knife") or (p:FindFirstChild("Backpack") and p.Backpack:FindFirstChild("Knife"))
+                    
+                    if gun then 
+                        if ESP_Sheriff then hl.FillColor = Color3.fromRGB(0,100,255) hl.Enabled = true
+                        elseif ESP_Hero then hl.FillColor = Color3.fromRGB(255,215,0) hl.Enabled = true
+                        else hl.Enabled = false end
+                    elseif knife then 
+                        if ESP_Murder then hl.FillColor = Color3.fromRGB(255,0,0) hl.Enabled = true else hl.Enabled = false end
+                    else 
+                        if ESP_Innocent then hl.FillColor = Color3.fromRGB(0,255,0) hl.Enabled = true else hl.Enabled = false end
+                    end
+                else
+                    if hl then hl:Destroy() end
+                end
+            end
+        end
+        
+        -- ESP упавшего пистолета
+        if ESP_Gun then
+            for _, obj in ipairs(workspace:GetChildren()) do 
+                if obj:IsA("Tool") and (string.find(obj.Name:lower(), "gun") or obj.Name == "Revolver") then 
+                    local gHl = obj:FindFirstChild("AngelGunESP") or Instance.new("Highlight", obj) 
+                    gHl.Name = "AngelGunESP" gHl.FillColor = Color3.fromRGB(255,215,0) gHl.FillTransparency = 0.3 
+                end 
+            end
+        else
+            for _, obj in ipairs(workspace:GetDescendants()) do 
+                if obj.Name == "AngelGunESP" then obj:Destroy() end 
+            end
+        end
+    end
+end)
+
+-- 2. ЦИКЛ ФИЗИКИ (Фарм, Полет, Защита)
+SafeConnect(RunService.Heartbeat, function()
+    if not IsAlive then return end
+    local char = Player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum then return end
+
+    -- ФАРМ
+    if AutoFarmEnabled and Player:GetAttribute("Alive") == true and not FlyEnabled then
+        wasFarming = true
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+        
+        -- Сохраняем коллизии ТОЛЬКО в FarmCollisions
+        for _, part in ipairs(char:GetDescendants()) do 
+            if part:IsA("BasePart") then 
+                if FarmCollisions[part] == nil then FarmCollisions[part] = part.CanCollide end
+                part.CanCollide = false 
+            end 
+        end
+
+        if not farmBV then
+            farmBV = Instance.new("BodyVelocity")
+            farmBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            farmBV.Parent = root
+        end
+
+        local coin = GetNearestCoin()
+        if coin then
+            local targetPos = coin.Position + Vector3.new(0, 2, 0)
+            local dist = (root.Position - targetPos).Magnitude
+
+            if dist > 4 then
+                farmBV.Velocity = (targetPos - root.Position).Unit * (FarmSpeed * 1.5)
+            else
+                farmBV.Velocity = Vector3.zero
+                root.CFrame = coin.CFrame + Vector3.new(0, 1, 0)
+                BlacklistedCoins[coin] = tick() + 2
+            end
+        else
+            farmBV.Velocity = Vector3.zero
+        end
+    else
+        if farmBV then farmBV:Destroy() farmBV = nil end
+        if wasFarming and char then
+            -- Восстанавливаем коллизии ТОЛЬКО из FarmCollisions
+            for _, part in ipairs(char:GetDescendants()) do 
+                if part:IsA("BasePart") and FarmCollisions[part] ~= nil then 
+                    part.CanCollide = FarmCollisions[part] 
+                    FarmCollisions[part] = nil 
+                end 
+            end
+            wasFarming = false
+        end
+        if not FlyEnabled then hum.PlatformStand = false end
+    end
+
+    -- ПОЛЕТ
+    if FlyEnabled then
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+        if not flyBV then
+            flyBV = Instance.new("BodyVelocity", root); flyBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            flyBG = Instance.new("BodyGyro", root); flyBG.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        end
+
+        local cam = workspace.CurrentCamera
+        local moveDir = hum.MoveDirection
+        local vel = Vector3.zero
+
+        if moveDir.Magnitude > 0 then
+            vel = (cam.CFrame.LookVector * moveDir.Z + cam.CFrame.RightVector * moveDir.X) * FlySpeed
+        end
+
+        if FlyUpPressed then vel = vel + Vector3.new(0, FlySpeed, 0) end
+        if FlyDownPressed then vel = vel - Vector3.new(0, FlySpeed, 0) end
+
+        flyBV.Velocity = vel
+        flyBG.CFrame = cam.CFrame
+    else
+        if flyBV then flyBV:Destroy() flyBV = nil end
+        if flyBG then flyBG:Destroy() flyBG = nil end
+    end
+
+    -- АНТИ-ФЛИНГ, АНТИ-АФК, АНТИ-АИМ
+    if AntiFlingEnabled and root.AssemblyLinearVelocity.Magnitude > 80 then root.AssemblyLinearVelocity = Vector3.zero end
+    if AntiAFKEnabled and tick() - LastAntiAFK > 60 then LastAntiAFK = tick() hum.Jump = true end
+    if AntiAimEnabled then root.CFrame = root.CFrame * CFrame.Angles(0, math.rad(math.random(-360, 360)), 0) end
+end)
+
+-- 3. ЦИКЛ БОЕВЫХ ДЕЙСТВИЙ
+task.spawn(function()
+    while IsAlive do
+        task.wait(0.1)
+        if not IsAlive then break end
+        local char = Player.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then continue end
+
+        if AutoPickupGunEnabled then
+            for _, obj in ipairs(workspace:GetChildren()) do
+                if obj.Name == "GunDrop" or (obj:IsA("Tool") and string.find(obj.Name:lower(), "gun")) then
+                    char.HumanoidRootPart.CFrame = obj.CFrame
+                    break
+                end
+            end
+        end
+
+        if (KillAuraEnabled or KillAllEnabled) and char:FindFirstChild("Knife") then
+            local knife = char.Knife
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= Player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                    local dist = (char.HumanoidRootPart.Position - p.Character.HumanoidRootPart.Position).Magnitude
+                    if dist < 15 or KillAllEnabled then
+                        char.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0,0,1)
+                        knife:Activate()
+                    end
+                end
+            end
+        end
+
+        if AutoShootEnabled and char:FindFirstChild("Gun") then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= Player and p.Character and (p.Character:FindFirstChild("Knife") or (p:FindFirstChild("Backpack") and p.Backpack:FindFirstChild("Knife"))) then
+                    char.Gun:Activate()
+                end
+            end
+        end
+
+        if AutoThrowKnife and char:FindFirstChild("Knife") then
+            local mouse = Player:GetMouse()
+            if mouse.Target and mouse.Target.Parent and mouse.Target.Parent:FindFirstChild("Humanoid") then char.Knife:Activate() end
+        end
+
+        if FlingAllEnabled or FlingOneEnabled then
+            local lroot = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if lroot and hum then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= Player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and (FlingAllEnabled or (FlingOneEnabled and p.Name == TargetFlingPlayer)) then
+                        for _, part in pairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = true end end
+                        hum:ChangeState(Enum.HumanoidStateType.Physics)
+                        lroot.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.Angles(math.rad(math.random(0,360)), math.rad(math.random(0,360)), math.rad(math.random(0,360)))
+                        lroot.Velocity = Vector3.new(50000, 50000, 50000)
+                        lroot.RotVelocity = Vector3.new(50000, 50000, 50000)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 4. NOCLIP И INF JUMP
+SafeConnect(RunService.Stepped, function()
+    if IsAlive and NoclipEnabled and Player.Character then 
+        for _, p in ipairs(Player.Character:GetDescendants()) do 
+            if p:IsA("BasePart") then 
+                if NoclipCollisions[p] == nil then NoclipCollisions[p] = p.CanCollide end
+                p.CanCollide = false 
+            end 
+        end 
+    end
+end)
+
+SafeConnect(UserInputService.JumpRequest, function()
+    if IsAlive and InfiniteJump and Player.Character then
+        local hum = Player.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+-- 5. SILENT AIM (Восстановление метатейбла)
+pcall(function()
+    local mt = getrawmetatable(game)
+    local oldIndex = mt.__index
+    ourIndex = mt.__index
+    
+    mtRestore = function()
+        pcall(function()
+            if getrawmetatable(game).__index == ourIndex then 
+                setreadonly(mt, false)
+                mt.__index = oldIndex
+                setreadonly(mt, true)
+            end
+        end)
+    end
+    
+    setreadonly(mt, false)
+    mt.__index = newcclosure(function(self, key)
+        if not IsAlive then return oldIndex(self, key) end
+        if SilentAimEnabled and key == "Hit" then
+            local closestPlayer = nil
+            local shortestDistance = math.huge
+            local mousePos = UserInputService:GetMouseLocation()
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= Player and p.Character and p.Character:FindFirstChild("Head") then
+                    local screenPos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(p.Character.Head.Position)
+                    if onScreen then
+                        local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(mousePos.X, mousePos.Y)).Magnitude
+                        if distance < shortestDistance then shortestDistance = distance closestPlayer = p end
+                    end
+                end
+            end
+            if closestPlayer then return CFrame.new(closestPlayer.Character.Head.Position) end
+        end
+        return oldIndex(self, key)
+    end)
+    setreadonly(mt, true)
+end)
+
+-- 6. FPS, ПИНГ И ТАЙМЕР
+SafeConnect(RunService.RenderStepped, function(dt)
+    if not IsAlive or not Main.Visible then return end
+    
+    -- Правильный FPS (без зависаний)
+    FPSL.Text = "FPS: " .. tostring(math.floor(1 / math.max(dt, 0.001)))
+    
+    -- Пинг
+    local success, ping = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    if success then PingL.Text = "Пинг: " .. tostring(math.floor(ping)) .. " ms" end
+    
+    -- Таймер (Единая точка отсчета)
+    local total = 0
+    if TimerRunning then 
+        total = TimerElapsedBase + (os.clock() - TimerStartTime)
+    else
+        total = TimerElapsedBase
+    end
+    
+    if TimerL then 
+        local seconds = math.floor(total)
+        TimerL.Text = string.format("%02d:%02d:%02d", math.floor(seconds/3600), math.floor((seconds%3600)/60), seconds%60) 
+    end
+end)
+
+ShowPage("Main")
+print("[angelDustHub] v11.0 Loaded! (Final Polish Version)")
